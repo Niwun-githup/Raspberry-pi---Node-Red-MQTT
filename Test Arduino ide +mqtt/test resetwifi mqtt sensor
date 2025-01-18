@@ -1,0 +1,140 @@
+#include <WiFi.h>
+#include <WiFiManager.h> // WiFiManager for WiFi handling
+#include <PubSubClient.h>
+#include "R60ABD1.h" // Include the custom sensor library
+
+// WiFiManager Configurations
+#define WIFI_RESET_PIN 0 // GPIO for WiFi reset button
+WiFiManager wm;
+
+// MQTT Configurations
+const char* mqtt_server = "192.168.100.178";
+const int mqtt_port = 1883;
+const char* mqtt_user = "raspi5nr";
+const char* mqtt_password = "12345";
+const char* topic = "test";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Sensor Configurations
+#define TX_PIN 17
+#define RX_PIN 16
+HardwareSerial mySerial(1);
+R60ABD1 sensor(mySerial);
+
+// Function to handle WiFi reset
+void handleWiFiReset() {
+  pinMode(WIFI_RESET_PIN, INPUT_PULLUP);
+  if (digitalRead(WIFI_RESET_PIN) == LOW) {
+    Serial.println("Wi-Fi reset button pressed. Resetting WiFi settings...");
+    wm.resetSettings();
+    delay(2000); // Delay to ensure reset completes properly
+    ESP.restart();
+  }
+}
+
+// Function to setup WiFi using WiFiManager
+void setupWiFiManager() {
+  pinMode(WIFI_RESET_PIN, INPUT_PULLUP);
+
+  
+  
+  // ตรวจสอบว่าปุ่มรีเซ็ต Wi-Fi ถูกกดหรือไม่
+  if (digitalRead(WIFI_RESET_PIN) == LOW) {
+    Serial.println("Wi-Fi reset button pressed. Resetting WiFi settings...");
+    wm.resetSettings(); // รีเซ็ตการตั้งค่า Wi-Fi
+    delay(1000); // รอให้การรีเซ็ตเสร็จสมบูรณ์
+  }
+
+
+  // Check if we have a saved Wi-Fi configuration
+  if (!wm.autoConnect("XIAO_ESP32C6_AP")) {
+    Serial.println("Failed to connect to WiFi. Starting AP mode...");
+    wm.startConfigPortal("XIAO_ESP32C6_AP");
+  }
+
+  Serial.println("WiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Function to setup MQTT client
+void setupMQTT() {
+  client.setServer(mqtt_server, mqtt_port);
+}
+
+// Function to reconnect MQTT
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client", mqtt_user, mqtt_password)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" trying again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // Setup WiFi Manager
+  setupWiFiManager();
+
+  // Setup MQTT
+  setupMQTT();
+
+  // Initialize sensor
+  mySerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  sensor.begin();
+  Serial.println("R60ABD1 Sensor Initialized");
+}
+
+void loop() {
+  // Handle WiFi reset
+ // handleWiFiReset();
+
+  // Ensure MQTT is connected
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+
+  // Update sensor data
+  sensor.update();
+  int presence = sensor.getPresenceStatus();
+  int motion = sensor.getMotionStatus();
+  int heartbeat = sensor.getHeartbeatRate();
+  int respiratory = sensor.getRespiratoryRate();
+  int sleepQuality = sensor.getSleepQuality();
+  int bedStatus = sensor.getBedStatus();
+
+  // Log data
+  Serial.println("Presence Status: " + String(presence));
+  Serial.println("Motion Status: " + String(motion));
+  Serial.println("Heartbeat Rate: " + String(heartbeat));
+  Serial.println("Respiratory Rate: " + String(respiratory));
+  Serial.println("Sleep Quality: " + String(sleepQuality));
+  Serial.println("Bed Status: " + String(bedStatus));
+  Serial.println("-------------------------");
+
+  // Prepare and publish MQTT payload
+  char payload[512];
+  snprintf(payload, sizeof(payload),
+           "{ \"presence_status\": \"%d\", \"motion_status\": \"%d\", \"heartbeat_rate\": %d, \"respiratory_rate\": %d, \"sleep_quality\": %d, \"bed_status\": \"%d\" }",
+           presence, motion, heartbeat, respiratory, sleepQuality, bedStatus);
+
+  if (client.publish(topic, payload)) {
+    Serial.println("Message sent successfully:");
+    Serial.println(payload);
+  } else {
+    Serial.println("Message failed to send");
+  }
+
+  delay(5000); // Publish every 5 seconds
+}
